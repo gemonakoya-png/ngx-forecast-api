@@ -7,39 +7,40 @@ import os
 
 app = Flask(__name__)
 
-def run_prophet(prices: list[dict], horizon_days: int):
-    """
-    prices: list of {"ds": "2024-01-01", "y": 110.0}
-    Returns forecast dict with target, high_band, low_band
-    """
+
+def run_forecast(prices, horizon_days):
     df = pd.DataFrame(prices)
     df["ds"] = pd.to_datetime(df["ds"])
     df["y"] = pd.to_numeric(df["y"], errors="coerce")
-    df = df.dropna().sort_values("ds")
+    df = df.dropna().sort_values("ds").reset_index(drop=True)
 
     if len(df) < 10:
         return None
 
-    model = Prophet(
-        daily_seasonality=False,
-        weekly_seasonality=True,
-        yearly_seasonality=True,
-        changepoint_prior_scale=0.05,
-        interval_width=0.80,
-    )
-    model.fit(df)
+    df["t"] = (df["ds"] - df["ds"].min()).dt.days
+    X = df[["t"]].values
+    y = df["y"].values
 
-    future = model.make_future_dataframe(periods=horizon_days)
-    forecast = model.predict(future)
+    poly = PolynomialFeatures(degree=2)
+    X_poly = poly.fit_transform(X)
+    model = LinearRegression()
+    model.fit(X_poly, y)
 
-    last = forecast.iloc[-1]
+    y_pred_train = model.predict(X_poly)
+    residuals = y - y_pred_train
+    std = np.std(residuals)
+
+    last_t = df["t"].max()
+    future_t = np.array([[last_t + horizon_days]])
+    future_poly = poly.transform(future_t)
+    target = float(model.predict(future_poly)[0])
+
+    high_band = round(target + 1.5 * std, 2)
+    low_band  = round(target - 1.5 * std, 2)
+    target    = round(target, 2)
+
     current_price = float(df["y"].iloc[-1])
-
-    target = round(float(last["yhat"]), 2)
-    high   = round(float(last["yhat_upper"]), 2)
-    low    = round(float(last["yhat_lower"]), 2)
-
-    pct_change = round(((target - current_price) / current_price) * 100, 2)
+    pct_change    = round(((target - current_price) / current_price) * 100, 2)
 
     if pct_change > 2:
         trend = "Up"
@@ -50,8 +51,8 @@ def run_prophet(prices: list[dict], horizon_days: int):
 
     return {
         "target":     target,
-        "high_band":  high,
-        "low_band":   low,
+        "high_band":  high_band,
+        "low_band":   low_band,
         "pct_change": pct_change,
         "trend":      trend,
     }
@@ -64,20 +65,6 @@ def health():
 
 @app.route("/forecast", methods=["POST"])
 def forecast():
-    """
-    POST /forecast
-    Body: {
-        "ticker": "ZENITHBANK",
-        "prices": [{"ds": "2024-01-01", "y": 110.0}, ...],
-        "current_price": 110.0
-    }
-    Returns: {
-        "ticker": "ZENITHBANK",
-        "current_price": 110.0,
-        "forecast_30d": { target, high_band, low_band, pct_change, trend },
-        "forecast_90d": { target, high_band, low_band, pct_change, trend }
-    }
-    """
     body = request.get_json()
     if not body:
         return jsonify({"error": "No body provided"}), 400
@@ -89,19 +76,16 @@ def forecast():
     if not ticker or not prices or not current_price:
         return jsonify({"error": "ticker, prices, and current_price are required"}), 400
 
-    f30 = run_prophet(prices, 30)
-    f90 = run_prophet(prices, 90)
+    f30 = run_forecast(prices, 30)
+    f90 = run_forecast(prices, 90)
 
     if not f30 or not f90:
         return jsonify({"error": "Not enough price data to forecast"}), 422
 
-    # Trend is determined by the 30d forecast
-    trend = f30["trend"]
-
     return jsonify({
         "ticker":        ticker,
         "current_price": current_price,
-        "trend":         trend,
+        "trend":         f30["trend"],
         "forecast_30d":  f30,
         "forecast_90d":  f90,
     })
@@ -109,11 +93,6 @@ def forecast():
 
 @app.route("/forecast/batch", methods=["POST"])
 def forecast_batch():
-    """
-    POST /forecast/batch
-    Body: { "stocks": [ { ticker, prices, current_price }, ... ] }
-    Returns: { "results": [ forecast, ... ] }
-    """
     body = request.get_json()
     if not body:
         return jsonify({"error": "No body provided"}), 400
@@ -129,8 +108,8 @@ def forecast_batch():
         if not ticker or not prices or not current_price:
             continue
 
-        f30 = run_prophet(prices, 30)
-        f90 = run_prophet(prices, 90)
+        f30 = run_forecast(prices, 30)
+        f90 = run_forecast(prices, 90)
 
         if not f30 or not f90:
             continue
