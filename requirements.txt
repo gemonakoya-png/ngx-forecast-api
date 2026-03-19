@@ -1,7 +1,5 @@
 flask==3.0.3
-prophet==1.1.5
 pandas==2.0.3
 numpy==1.24.4
+scikit-learn==1.3.2
 gunicorn==22.0.0
-cmdstanpy==1.2.4
-pystan==3.9.1
