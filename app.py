@@ -1,7 +1,8 @@
 from flask import Flask, request, jsonify
 import pandas as pd
 import numpy as np
-from prophet import Prophet
+from sklearn.linear_model import LinearRegression
+from sklearn.preprocessing import PolynomialFeatures
 import os
 
 app = Flask(__name__)
